@@ -78,7 +78,7 @@
 --
 -- To collect all Lua (and C) modules used by a program, you can load
 -- the `amalg.lua` script as a module, and it will intercept calls to
--- `require` (more specifically the Lua module searcher) and save the
+-- `require` (more specifically the Lua module searchers) and save the
 -- necessary Lua module names in a file `amalg.cache` in the current
 -- directory:
 --
@@ -101,6 +101,15 @@
 --
 -- This will make the amalgamated script platform- and Lua version
 -- dependent, obviously!
+--
+-- In some cases you may want to ignore automatically listed modules
+-- in the cache without editing the cache file. Use the `-i` option
+-- for that and specify a Lua pattern:
+--
+--     ./amalg.lua -o out.lua -s main.lua -c -i "^luarocks%."
+--
+-- The `-i` option can be used multiple times to specify multiple
+-- patterns.
 --
 -- To fix a compatibility issue with Lua 5.1's vararg handling,
 -- `amalg.lua` by default adds a local alias to the global `arg` table
@@ -142,6 +151,8 @@ end
 -- *   `-o <file>`: specify output file (default is `stdout`)
 -- *   `-s <file>`: specify main script to bundle
 -- *   `-c`: add the modules listed in the cache file `amalg.cache`
+-- *   `-i <pattern>`: ignore modules in the cache file matching the
+--     given pattern (can be given multiple times)
 -- *   `-d`: enable debug mode (file names and line numbers in error
 --     messages will point to the original location)
 -- *   `-a`: do *not* apply the `arg` fix (local alias for the global
@@ -154,7 +165,8 @@ end
 -- command line (e.g. duplicate options) a warning is printed to the
 -- console.
 local function parse_cmdline( ... )
-  local modules, afix, use_cache, cmods, dbg, script, oname = {}, true
+  local modules, afix, ignores, use_cache, cmods, dbg, script, oname =
+        {}, true, {}
 
   local function set_oname( v )
     if v then
@@ -178,6 +190,18 @@ local function parse_cmdline( ... )
     end
   end
 
+  local function add_ignore( v )
+    if v then
+      if not pcall( string.match, "", v ) then
+        warn( "Invalid Lua pattern: `"..v.."'" )
+      else
+        ignores[ #ignores+1 ] = v
+      end
+    else
+      warn( "Missing argument for -i option!" )
+    end
+  end
+
   local i, n = 1, select( '#', ... )
   while i <= n do
     local a = select( i, ... )
@@ -192,6 +216,9 @@ local function parse_cmdline( ... )
     elseif a == "-s" then
       i = i + 1
       set_script( i <= n and select( i, ... ) )
+    elseif a == "-i" then
+      i = i + 1
+      add_ignore( i <= n and select( i, ... ) )
     elseif a == "-c" then
       use_cache = true
     elseif a == "-x" then
@@ -206,6 +233,8 @@ local function parse_cmdline( ... )
         set_oname( a:sub( 3 ) )
       elseif prefix == "-s" then
         set_script( a:sub( 3 ) )
+      elseif prefix == "-i" then
+        add_ignore( a:sub( 3 ) )
       elseif a:sub( 1, 1 ) == "-" then
         warn( "Unknown command line flag: "..a )
       else
@@ -214,7 +243,7 @@ local function parse_cmdline( ... )
     end
     i = i + 1
   end
-  return oname, script, dbg, afix, use_cache, cmods, modules
+  return oname, script, dbg, afix, use_cache, ignores, cmods, modules
 end
 
 
@@ -250,13 +279,15 @@ end
 local function readluafile( path )
   local is_bin = is_bytecode( path )
   local s = readfile( path, is_bin )
+  local shebang
   if not is_bin then
     -- Shebang lines are only supported by Lua at the very beginning
     -- of a source file, so they have to be removed before the source
     -- code can be embedded in the output.
+    shebang = s:match( "^(#![^\n]*)" )
     s = s:gsub( "^#[^\n]*", "" )
   end
-  return s, is_bin
+  return s, is_bin, shebang
 end
 
 
@@ -336,15 +367,26 @@ end
 -- collects the module and script sources, and writes the amalgamated
 -- source.
 local function amalgamate( ... )
-  local oname, script, dbg, afix, use_cache, cmods, modules = parse_cmdline( ... )
+  local oname, script, dbg, afix, use_cache, ignores, cmods, modules =
+        parse_cmdline( ... )
   local errors = {}
 
   -- When instructed to on the command line, the cache file is loaded,
-  -- and the modules are added to the ones listed on the command line.
+  -- and the modules are added to the ones listed on the command line
+  -- unless they are ignored via the `-i` command line option.
   if use_cache then
     local c = readcache()
     for k,v in pairs( c or {} ) do
-      modules[ k ] = v
+      local addmodule = true
+      for _,p in ipairs( ignores ) do
+        if k:match( p ) then
+          addmodule = false
+          break
+        end
+      end
+      if addmodule then
+        modules[ k ] = v
+      end
     end
   end
 
@@ -353,16 +395,32 @@ local function amalgamate( ... )
     out = assert( io.open( oname, "w" ) )
   end
 
-  -- If a main script is to be embedded, this includes a shebang line
-  -- so that the resulting amalgamation can be run without explicitly
-  -- specifying the interpreter on unixoid systems.
+  -- If a main script is to be embedded, this includes the same
+  -- shebang line that was used in the main script, so that the
+  -- resulting amalgamation can be run without explicitly
+  -- specifying the interpreter on unixoid systems (if a shebang
+  -- line was specified in the first place, that is).
+  local script_bytes, script_binary, shebang
   if script then
-    out:write( "#!/usr/bin/env lua\n\ndo\n\n" )
+    script_bytes, script_binary, shebang = readluafile( script )
+    if shebang then
+      out:write( shebang, "\n\n" )
+    end
+    out:write( "do\n\n" )
   end
+
+  -- Sort modules alphabetically. Modules will be embedded in
+  -- alphabetical order. This ensures deterministic output.
+  local module_names = {}
+  for m in pairs( modules ) do
+    module_names[ #module_names+1 ] = m
+  end
+  table.sort( module_names )
 
   -- Every module given on the command line and/or in the cache file
   -- is processed.
-  for m,t in pairs( modules ) do
+  for _,m in ipairs( module_names ) do
+    local t = modules[ m ]
     -- Only Lua modules are handled for now, so modules that are
     -- definitely C modules are skipped and handled later.
     if t ~= "C" then
@@ -444,7 +502,8 @@ local function newdllname()
   local tmpname = assert( os_tmpname() )
   if dirsep == "\\" then
     if not string_match( tmpname, "[\\/][^\\/]+[\\/]" ) then
-      tmpdir = tmpdir or assert( os_getenv( "TMP" ),
+      tmpdir = tmpdir or assert( os_getenv( "TMP" ) or
+                                 os_getenv( "TEMP" ),
                                  "could not detect temp directory" )
       local first = string_sub( tmpname, 1, 1 )
       local hassep = first == "\\" or first == "/"
@@ -456,7 +515,8 @@ end
 local dllnames = {}
 
 ]=]
-    for m,t in pairs( modules ) do
+    for _,m in ipairs( module_names ) do
+      local t = modules[ m ]
       if t == "C" then
         -- Try a search strategy similar to the standard C module
         -- searcher first and then the all-in-one strategy to locate
@@ -546,13 +606,12 @@ end
   -- `require`.
   if script then
     out:write( "end\n\n" )
-    local bytes, is_bin = readluafile( script )
-    if is_bin or dbg then
+    if script_binary or dbg then
       out:write( "assert( (loadstring or load)(\n",
-                 qformat( bytes ), "\n, '@'..",
+                 qformat( script_bytes ), "\n, '@'..",
                  qformat( script ), " ) )( ... )\n\n" )
     else
-      out:write( bytes )
+      out:write( script_bytes )
     end
   end
 
@@ -570,17 +629,21 @@ local function collect()
   local searchers = package.searchers or package.loaders
   -- When the searchers table has been modified, it is unknown which
   -- elements in the table to replace, so `amalg.lua` bails out with
-  -- an error.
-  assert( #searchers == 4, "package.searchers has been modified" )
+  -- an error. The `luarocks.loader` module which inserts itself at
+  -- position 1 in the `package.searchers` table is explicitly
+  -- supported, though!
+  local off = 0
+  if package.loaded[ "luarocks.loader" ] then off = 1 end
+  assert( #searchers == 4+off, "package.searchers has been modified" )
   local c = readcache() or {}
   -- The updated cache is written to disk when the following value is
   -- garbage collected, which should happen at `lua_close()`.
   local sentinel = newproxy and newproxy( true )
                             or setmetatable( {}, { __gc = true } )
   getmetatable( sentinel ).__gc = function() writecache( c ) end
-  local lua_searcher = searchers[ 2 ]
-  local c_searcher = searchers[ 3 ]
-  local aio_searcher = searchers[ 4 ] -- all in one searcher
+  local lua_searcher = searchers[ 2+off ]
+  local c_searcher = searchers[ 3+off ]
+  local aio_searcher = searchers[ 4+off ] -- all in one searcher
 
   local function rv_handler( tag, mname, ... )
     if type( (...) ) == "function" then
@@ -591,15 +654,15 @@ local function collect()
 
   -- The replacement searchers just forward to the original versions,
   -- but also update the cache if the search was successful.
-  searchers[ 2 ] = function( ... )
+  searchers[ 2+off ] = function( ... )
     local _ = sentinel -- make sure that sentinel is an upvalue
     return rv_handler( "L", ..., lua_searcher( ... ) )
   end
-  searchers[ 3 ] = function( ... )
+  searchers[ 3+off ] = function( ... )
     local _ = sentinel -- make sure that sentinel is an upvalue
     return rv_handler( "C", ..., c_searcher( ... ) )
   end
-  searchers[ 4 ] = function( ... )
+  searchers[ 4+off ] = function( ... )
     local _ = sentinel -- make sure that sentinel is an upvalue
     return rv_handler( "C", ..., aio_searcher( ... ) )
   end

@@ -1,22 +1,23 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = "amalg"
-version = "0.3-1"
+version = "0.4-1"
 -- LuaDist source
 source = {
-  tag = "0.3-1",
+  tag = "0.4-1",
   url = "git://github.com/LuaDist-testing/amalg.git"
 }
 -- Original source
 -- source = {
 --   url = "git://github.com/siffiejoe/lua-amalg.git",
---   tag = "v0.3"
+--   tag = "v0.4"
 -- }
 description = {
   summary = "Amalgamation for Lua modules/scripts.",
   detailed = [[
     This small Lua module/script can package a Lua script and its
-    dependencies as a single Lua file for easier deployment.
+    dependencies (Lua modules only) as a single Lua file for easier
+    deployment.
   ]],
   homepage = "https://github.com/siffiejoe/lua-amalg/",
   license = "MIT"
