@@ -1,8 +1,17 @@
+-- This file was automatically generated for the LuaDist project.
+
 package = "amalg"
-version = "scm-0"
+version = "0.2-1"
+-- LuaDist source
 source = {
-  url = "git://github.com/siffiejoe/lua-amalg.git",
+  tag = "0.2-1",
+  url = "git://github.com/LuaDist-testing/amalg.git"
 }
+-- Original source
+-- source = {
+--   url = "git://github.com/siffiejoe/lua-amalg.git",
+--   tag = "v0.2"
+-- }
 description = {
   summary = "Amalgamation for Lua modules/scripts.",
   detailed = [[
@@ -27,4 +36,3 @@ build = {
     }
   }
 }
-
